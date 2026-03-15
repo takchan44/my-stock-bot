@@ -1,0 +1,33 @@
+name: Global Stock Daily Report
+
+on:
+  schedule:
+    # 나스닥: 한국 오전 7:30 (UTC 전날 22:30)
+    - cron: '30 22 * * *'
+    # 코스피: 한국 오후 3:30 (UTC 당일 06:30)
+    - cron: '30 6 * * *'
+  workflow_dispatch: 
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install finance-datareader pandas requests beautifulsoup4 openpyxl
+
+      - name: Run KOSPI Script
+        if: github.event.schedule == '30 6 * * *' || github.event_name == 'workflow_dispatch'
+        run: python kospi_bot.py
+
+      - name: Run NASDAQ Script
+        if: github.event.schedule == '30 22 * * *' || github.event_name == 'workflow_dispatch'
+        run: python nasdaq_bot.py
