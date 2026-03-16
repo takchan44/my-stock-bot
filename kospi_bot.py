@@ -9,114 +9,98 @@ TELEGRAM_TOKEN = '8714582588:AAEq4h3_CfAPaLKkVmqxv8AqRJ3ym2XgGeI'
 CHAT_ID = '8613977068'
 # ------------------
 
+def send_msg(text):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    if len(text) > 4000:
+        for i in range(0, len(text), 4000):
+            requests.get(url, params={'chat_id': CHAT_ID, 'text': text[i:i+4000]})
+    else:
+        requests.get(url, params={'chat_id': CHAT_ID, 'text': text})
+
 def check_news_hot(stock_name):
-    """구글 뉴스에서 해당 종목의 호재 키워드를 스캔합니다."""
     try:
-        # 뉴스 검색 속도를 위해 종목명+주가+호재 키워드 조합
         url = f"https://www.google.com/search?q={stock_name}+주가+호재&tbm=nws"
         headers = {'User-Agent': 'Mozilla/5.0'}
         res = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
-        
-        # 탐지할 긍정 키워드
         hot_keywords = ['상승', '호재', '돌파', '수혜', '실적', '계약', '유치', '급등', '신고가']
         news_content = soup.get_text()
-        
         for kw in hot_keywords:
-            if kw in news_content:
-                return f"🔥뉴스({kw})"
+            if kw in news_content: return kw
         return ""
-    except:
-        return ""
+    except: return ""
 
-def run_final_top30_scan():
-    print("🔍 코스피 전 종목 분석 및 뉴스 스캔 시작 (약 10~15분 소요)...")
+def run_kospi_pro_report():
+    print("🔍 코스피 정밀 분석 및 프로 리포트 생성 중...")
     df_kospi = fdr.StockListing('KOSPI')
-    
-    # 엑셀과 메시지에 담을 최종 후보들을 모을 리스트
     candidate_list = []
 
     for index, row in df_kospi.iterrows():
         code, name = row['Code'], row['Name']
         try:
-            df = fdr.DataReader(code).tail(40)
+            df = fdr.DataReader(code).tail(60) # 지지선 계산을 위해 데이터를 조금 더 가져옴
             if len(df) < 30: continue
             
-            # 지표 계산 (5일, 20일 이동평균선)
             df['MA5'] = df['Close'].rolling(window=5).mean()
             df['MA20'] = df['Close'].rolling(window=20).mean()
-            
             curr = df.iloc[-1]
             prev = df.iloc[-2]
             
-            # 1. 내일 골든크로스 예상 로직 (5일선이 20일선 1.5% 밑까지 바짝 붙었을 때)
-            gap = (curr['MA20'] - curr['MA5']) / curr['MA20']
-            is_potential_gold = 0 < gap < 0.015 and (curr['MA5'] > prev['MA5'])
+            # 1. 가격 계산
+            current_price = int(curr['Close'])
+            # 하단선(지지선): 최근 20일간의 최저가
+            support_line = int(df['Low'].tail(20).min())
+            # 상한가(예상): 오늘 종가 대비 +30% (한국 기준 최대치)
+            max_price = int(current_price * 1.3)
             
-            # 2. 오늘 등락률
+            # 2. 기술적 지표 (골든크로스 임박)
+            gap = (curr['MA20'] - curr['MA5']) / curr['MA20']
+            is_potential_gold = 0 < gap < 0.025 and (curr['MA5'] > prev['MA5'])
             change_rate = ((curr['Close'] - prev['Close']) / prev['Close']) * 100
             
-            # 3. 조건부 뉴스 분석 (기술적 지표가 좋은 종목만 필터링해서 뉴스 검색)
-            news_tag = ""
+            # 3. 뉴스 분석
+            news_keyword = ""
             if is_potential_gold or change_rate > 5:
-                news_tag = check_news_hot(name)
+                news_keyword = check_news_hot(name)
             
-            # 4. 결과 집계 (신호가 하나라도 있는 경우만 리스트에 넣음)
-            if is_potential_gold or news_tag:
-                status_list = []
-                score = change_rate # 기본 점수는 오늘 등락률
-                
-                if is_potential_gold:
-                    status_list.append("✨골든크로스 임박")
-                    score += 15 # 골든크로스 임박 시 가산점
-                if news_tag:
-                    status_list.append(news_tag)
-                    score += 10 # 뉴스 호재 시 가산점
+            if is_potential_gold or news_keyword:
+                score = change_rate + (15 if is_potential_gold else 0) + (10 if news_keyword else 0)
                 
                 candidate_list.append({
                     '종목명': name,
-                    '현재가': int(curr['Close']),
+                    '현재가': current_price,
+                    '하단선': support_line,
+                    '상한가(예상)': max_price,
                     '등락률(%)': round(change_rate, 2),
-                    '상태': " / ".join(status_list),
-                    '우선순위점수': score
+                    '호재 뉴스': news_keyword if news_keyword else "없음",
+                    '상태': "✨골든크로스 임박" if is_potential_gold else "수급발생",
+                    'Score': score
                 })
+        except: continue
 
-            if (index + 1) % 100 == 0:
-                print(f"📊 현재 {index + 1}개 종목 분석 중...")
-
-        except:
-            continue
-
-    # 5. 핵심: 점수 순으로 정렬하여 '딱 상위 30개'만 남기기
-    final_30_df = pd.DataFrame(candidate_list).sort_values(by='우선순위점수', ascending=False).head(30)
+    final_df = pd.DataFrame(candidate_list).sort_values(by='Score', ascending=False).head(30)
     
-    # 점수 컬럼은 결과창에서 가독성을 위해 삭제
-    if not final_30_df.empty:
-        final_30_df.drop('우선순위점수', axis=1, inplace=True)
+    if not final_df.empty:
+        final_df.drop('Score', axis=1, inplace=True)
+        excel_file = "코스피_상세_분석_TOP30.xlsx"
+        final_df.to_excel(excel_file, index=False)
 
-    # 6. 엑셀 파일 저장 (이제 30개만 들어갑니다)
-    excel_file = "내일의_공략주_TOP30.xlsx"
-    final_30_df.to_excel(excel_file, index=False)
+        report_text = f"🇰🇷 코스피 프로 상세 분석 TOP 30\n"
+        report_text += f"━━━━━━━━━━━━━━━━━━\n"
+        for i, (_, row) in enumerate(final_df.iterrows(), 1):
+            report_text += f"{i:2d}. {row['종목명']} ({row['등락률(%)']:+.2f}%)\n"
+            report_text += f"   💰 현재가: {row['현재가']:,}원\n"
+            report_text += f"   📉 하단선: {row['하단선']:,}원\n"
+            report_text += f"   🚀 상한가(예): {row['상한가(예상)']:,}원\n"
+            report_text += f"   🔥 뉴스: {row['호재 뉴스']}\n"
+            report_text += f"   👉 상태: {row['상태']}\n"
+            report_text += f"----------------------------------\n"
 
-    # 7. 텔레그램 메시지 작성
-    report_text = f"🎯 내일이 기대되는 코스피 TOP 30\n"
-    report_text += f"기준: 골든크로스 임박 & 뉴스 호재\n"
-    report_text += "━━━━━━━━━━━━━━━━━━\n"
-    
-    if not final_30_df.empty:
-        for i, (_, row) in enumerate(final_30_df.iterrows(), 1):
-            report_text += f"{i:2d}. {row['종목명']} ({row['등락률(%)']:+.2f}%)\n   👉 {row['상태']}\n"
-    else:
-        report_text += "오늘 조건에 맞는 종목을 찾지 못했습니다."
-
-    # 8. 전송
-    # 메시지 전송
-    requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", params={'chat_id': CHAT_ID, 'text': report_text})
-    # 엑셀 파일 전송 (30개 전용)
-    with open(excel_file, 'rb') as f:
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument", data={'chat_id': CHAT_ID}, files={'document': f})
-    
-    print("✅ 분석 완료! 텔레그램으로 TOP 30 메시지와 엑셀을 보냈습니다.")
+        send_msg(report_text)
+        with open(excel_file, 'rb') as f:
+            requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument", 
+                          data={'chat_id': CHAT_ID}, files={'document': f})
+        print("✅ 코스피 프로 리포트 전송 완료!")
 
 if __name__ == "__main__":
-    run_final_top30_scan()
+    run_kospi_pro_report()
